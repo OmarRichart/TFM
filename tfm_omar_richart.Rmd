@@ -1,0 +1,286 @@
+---
+title: "omar_richart_tfm"
+author: "Omar Richart"
+date: "16 de febrero de 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Importamos el dataset
+```{r}
+datos <- read.csv("/Users/u029532/Downloads/data.csv", header=T, stringsAsFactors=F)
+```
+
+###Eliminamos los registros nulos del dataset y la columna id
+```{r}
+datos$X <- NULL
+datos <- datos[,-1]
+```
+###Renombramos el campo diagnosis a Benigno o Maligno
+```{r}
+datos$diagnosis <- factor(ifelse(datos$diagnosis=="B","Benigno","Maligno"))
+```
+
+####Resumen del dataset
+```{r}
+summary(datos)
+```
+
+####Correlacion de las variables aplicando libreria ggplot
+```{r}
+library(ggplot2)
+library(GGally)
+ggpairs(datos[,c(22:31,1)], aes(color=diagnosis, alpha=0.75),legend = NULL,lower=list(continuous="smooth"))+ theme_bw()+
+theme(plot.title=element_text(face='bold',color='black'))
+```
+
+####Funcion ggcorr
+```{r}
+ggcorr(datos[,c(22:31)], nbreaks = 4, palette = "RdGy", label = TRUE, label_size = 3, label_color = "white")+
+  theme(legend.position="none")+
+labs(title="Correlación entre variables con ggcorr")+
+theme(plot.title=element_text(face='bold',color='black',hjust=0.5,size=10))
+```
+
+####Analisis de componentes principales (PCA) paquete 'prcomp' descripción de un conjunto de datos de variables no correlacionadas, PCA utiliza datos estandarizados para evitar la distorsión de datos causada por la diferencia de escala."
+```{r}
+library(factoextra)
+datos_pca <- transform(datos)
+
+prcomp_pca <- prcomp(datos_pca[,c(22:31)], scale = TRUE)
+summary(prcomp_pca)
+```
+La proporción acumulada de PC1 a PC3 es de aproximadamente 86%.
+```{r}
+fviz_eig(prcomp_pca, addlabels=TRUE, ylim=c(0,60), geom = c("bar", "line"), barfill = "pink", barcolor="grey",linecolor = "red", ncp=10)+
+  labs(title = "Análisis - PCA",
+       x = "Componentes", y = "% variaciones")
+datos_var <- get_pca_var(prcomp_pca)
+datos_var
+```
+
+###Correlacion entre las variables y PCA"
+The corrplot package is a graphical display of a correlation matrix, confidence interval. It also contains some algorithms to do matrix reordering.
+```{r}
+library("corrplot")
+corrplot(datos_var$cos2, is.corr=FALSE)
+
+"Variables que más contribuyen en cada componente"
+
+corrplot(datos_var$contrib, is.corr=FALSE)
+```
+
+###Cálculo de aportacion de las variables PC1 y PC2
+```{r}
+library(gridExtra)
+p1 <- fviz_contrib(prcomp_pca, choice="var", axes=1, fill="pink", color="grey", top=10)
+p2 <- fviz_contrib(prcomp_pca, choice="var", axes=2, fill="skyblue", color="grey", top=10)
+grid.arrange(p1,p2,ncol=2)
+```
+
+###Componente principal optimo
+```{r}
+library("factoextra")
+set.seed(500)
+res.opt <- kmeans(datos_var$coord, centers = 3, nstart = 25)
+grp <- as.factor(res.opt$cluster)
+
+fviz_pca_var(prcomp_pca, col.var = grp, palette = "jco", legend.title = "Componente principal óptimo")
+
+```
+
+# Aplicacion de metodos de Machine Learning
+## Test/training del conjunto de datos con métodos de Machine Learning
+```{r}
+nrows <- NROW(datos)
+set.seed(218)   ## valor aleatorio
+index <- sample(1:nrows, 0.7 * nrows)
+sample(index)
+train <- datos[index,]
+test <- datos[-index,]
+prop.table(table(train$diagnosis))  #training
+prop.table(table(test$diagnosis))   #test
+```
+
+###1.Recursive Partitioning And Regression Trees
+```{r}
+library(caret)
+library(rpart)
+learn_rpart <- rpart(diagnosis~.,data=train,control=rpart.control(minsplit=2))
+pre_rp <- predict(learn_rpart, test[,-1], type="class")
+cm_rp  <- confusionMatrix(pre_rp, test$diagnosis)   
+cm_rp
+```
+
+###2.RandomForest
+```{r}
+library(randomForest)
+learn_rf <- randomForest(diagnosis~., data=train, ntree=500, proximity=T, importance=T)
+pre_rf   <- predict(learn_rf, test[,-1])
+cm_rf    <- confusionMatrix(pre_rf, test$diagnosis)
+cm_rf
+plot(learn_rf, main="Random Forest")
+```
+
+###3.Generalized Boosted Regression Modeling
+```{r}
+library(gbm)
+test_gbm <- gbm(diagnosis~., data=train, distribution="gaussian",n.trees = 10000,
+                shrinkage = 0.01, interaction.depth = 4, bag.fraction=0.5, train.fraction=0.5,n.minobsinnode=10,cv.folds=3,keep.data=TRUE,verbose=FALSE,n.cores=1)
+best.iter <- gbm.perf(test_gbm, method="cv",plot.it=FALSE)
+fitControl = trainControl(method="cv", number=5, returnResamp="all")
+learn_gbm = train(diagnosis~., data=train, method="gbm", distribution="bernoulli", trControl=fitControl, verbose=F, tuneGrid=data.frame(.n.trees=best.iter, .shrinkage=0.01, .interaction.depth=1, .n.minobsinnode=1))
+pre_gbm <- predict(learn_gbm, test[,-1])
+cm_gbm <- confusionMatrix(pre_gbm, test$diagnosis)
+cm_gbm
+```
+
+###4.k-means clustering
+```{r}
+predict.kmeans <- function(newdata, object){
+    centers <- object$centers
+    n_centers <- nrow(centers)
+    dist_mat <- as.matrix(dist(rbind(centers, newdata)))
+    dist_mat <- dist_mat[-seq(n_centers), seq(n_centers)]
+    max.col(-dist_mat)
+}
+
+library(caret)
+learn_kmeans <- kmeans(train[,-1], centers=2)
+pre_kmeans <- predict.kmeans(test[,-1],learn_kmeans)
+pre_kmeans <- ifelse(pre_kmeans == 1,"Benigno","Maligno")
+cm_kmeans <- confusionMatrix(table(pre_kmeans, test$diagnosis))
+cm_kmeans
+
+learn_kmeans$cluster <- ifelse(learn_kmeans$cluster == 1,"Benigno","Maligno")
+fviz_cluster(learn_kmeans, data = train[,-1])
+```
+
+###5.C5.0 Decision Trees and Rule-Based Models
+```{r}
+library(C50)
+learn_c50 <- C5.0(train[,-1],train$diagnosis)
+pre_c50 <- predict(learn_c50, test[,-1])
+cm_c50 <- confusionMatrix(pre_c50, test$diagnosis)
+cm_c50
+```
+
+###6.Support Vector Regression
+```{r}
+library(e1071)
+learn_svm <- svm(diagnosis~., data=train)
+pre_svm <- predict(learn_svm, test[,-1])
+cm_svm <- confusionMatrix(pre_svm, test$diagnosis)
+cm_svm
+```
+
+##Comparativa entre los modelos
+```{r}
+par(mfrow=c(2,3))
+fourfoldplot(cm_rp$table, main=paste("RPart (",round(cm_rp$overall[1]*100),"%)",sep=""))
+fourfoldplot(cm_rf$table, main=paste("RandomForest (",round(cm_rf$overall[1]*100),"%)",sep=""))
+fourfoldplot(cm_gbm$table, main=paste("GBM (",round(cm_gbm$overall[1]*100),"%)",sep=""))
+fourfoldplot(cm_kmeans$table, main=paste("KMeans (",round(cm_kmeans$overall[1]*100),"%)",sep=""))
+fourfoldplot(cm_c50$table, main=paste("C5.0 (",round(cm_c50$overall[1]*100),"%)",sep=""))
+fourfoldplot(cm_svm$table, main=paste("SVM (",round(cm_svm$overall[1]*100),"%)",sep=""))
+```
+
+##Mejor modelo: SVM: Support Vector Regression
+```{r}
+opt_predict <- c(cm_rp$overall[1], cm_rf$overall[1], cm_gbm$overall[1], cm_kmeans$overall[1], cm_c50$overall[1], cm_svm$overall[1])
+names(opt_predict) <- c("cm_rp","cm_rf","cm_gbm","cm_kmeans","cm_c50","cm_svm")
+best_predict_model <- subset(opt_predict, opt_predict==max(opt_predict))
+best_predict_model
+```
+
+##Prediccion, utilizando el mejor algoritmo SVM"
+Importamos la columna diagnosis
+```{r}
+patient <- read.csv("/Users/u029532/Downloads/data.csv", header=T, stringsAsFactors=F)
+patient$X <- NULL
+M <- patient[19,]
+M[,c(1,2)]
+B <- patient[20,]
+B[,c(1,2)]
+M$diagnosis <- NULL
+B$diagnosis <- NULL
+
+cancer_diagnosis_prediction_p <- function(new, method=learn_svm) {
+    new_pre <- predict(method, new[,-1])
+    new_res <- as.character(new_pre)
+return(paste("Paciente: ",new[,1],"  =>  Resultado: ", new_res, sep=""))
+}
+```
+Aplicamos el modelo para el caso Benigno
+```{r}
+cancer_diagnosis_prediction_p(B)
+```
+Aplicamos el modelo para el caso Maligno
+```{r}
+cancer_diagnosis_prediction_p(M)
+```
+
+##Visualizacion de los datos
+```{r}
+resumen_plot <- function(new,data) {
+
+## Redimensionamos el dataset
+library(reshape2)
+m_train <- melt(data, id="diagnosis")
+m_new <- melt(new[,-1])
+
+
+## Variables
+key_factors <- c("radius_mean","perimeter_mean","area_mean","perimeter_worst",
+                 "texture_worst","radius_worst","symmetry_se","compactness_worst",
+                 "concavity_worst","dimension_worst")
+
+key_col <- ifelse(m_new$variable %in% key_factors,"red","black")
+
+library(dplyr, warn.conflicts = FALSE)
+mal_mean <- subset(data, diagnosis=="Maligno", select=-1)
+mal_mean <- apply(mal_mean,2,mean)
+
+library(stringr)
+mal_col <- ifelse((round(m_new$value,3) > mal_mean) & (str_count(m_new$variable, 'worst') < 1), "red", "black")
+
+title <- "Plot-analisis Cancer de mama"
+subtitle <- cancer_diagnosis_prediction_p(new)
+
+library(ggplot2)
+
+res_key <- ggplot(m_train, aes(x=value,color=diagnosis, fill=diagnosis))+
+    geom_histogram(aes(y=..density..), alpha=0.5, position="identity", bins=50)+
+    geom_density(alpha=.2)+
+    scale_color_manual(values=c("#15c3c9","#f87b72"))+
+    scale_fill_manual(values=c("#61d4d6","#f5a7a1"))+
+    geom_vline(data=m_new, aes(xintercept=value), 
+               color=key_col, size=1.5)+
+    geom_label(data=m_new, aes(x=Inf, y=Inf, label=round(value,3)), nudge_y=2,  
+               vjust = "top", hjust = "right", fill="white", color="black")+
+    labs(title=paste(title,"(highlight Key Factors)"), subtitle=subtitle)+
+    theme(plot.title = element_text(face='bold', colour='black', hjust=0.5, size=15))+
+    facet_wrap(~variable, scales="free")
+
+res_mean <- ggplot(m_train, aes(x=value,color=diagnosis, fill=diagnosis))+
+    geom_histogram(aes(y=..density..), alpha=0.5, position="identity", bins=50)+
+    geom_density(alpha=.2)+
+    scale_color_manual(values=c("#15c3c9","#f87b72"))+
+    scale_fill_manual(values=c("#61d4d6","#f5a7a1"))+
+    geom_vline(data=m_new, aes(xintercept=value), 
+               color=mal_col, size=1.5)+
+    geom_label(data=m_new, aes(x=Inf, y=Inf, label=round(value,3)), nudge_y=2,  
+               vjust = "top", hjust = "right", fill="white", color="black")+
+    labs(title=paste(title,"(highlight Above malignant average)"), subtitle=subtitle)+
+    theme(plot.title = element_text(face='bold', colour='black', hjust=0.5, size=15))+
+    facet_wrap(~variable, scales="free")
+
+## [g] output graph
+res_mean
+#res_key
+}
+resumen_plot(B,datos)
+```
